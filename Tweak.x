@@ -45,9 +45,11 @@ static NSArray<NSString *> *TTKProgressPatterns(void) {
     return @[@"progress", @"slider", @"seekbar", @"seek", @"scrub",
              @"timeline", @"playbar", @"playerbar", @"controlbar", @"progressview"];
 }
-static NSArray<NSString *> *TTKSearchPatterns(void) {
-    return @[@"search"];
-}
+// TTKSearchPatterns đã bị XOÁ ở đây (không để hàm chết): bản v2 bỏ nút
+// góc phải nên không còn chỗ nào gọi nó nữa, và Theos bật -Werror nên
+// hàm static không dùng tới cũng làm fail cả build (lỗi ở log 2026-11-04).
+// Sheet Filters v2 nhận diện bằng nội dung ("Filters" + "Sort by" +
+// "Apply"), không cần pattern tên class search nữa.
 static NSArray<NSString *> *TTKToastPatterns(void) {
     return @[@"toast", @"snackbar", @"tipview", @"toastview"];
 }
