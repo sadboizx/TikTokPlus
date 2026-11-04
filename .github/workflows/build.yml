@@ -12,9 +12,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git perl libssl-dev pkg-config \
-            build-essential fakeroot dpkg xz-utils
+            build-essential fakeroot dpkg xz-utils \
+            curl rsync zip libtinfo6 libxml2
       - name: Clone Theos
         run: git clone --recursive https://github.com/theos/theos.git $HOME/theos
+      # BƯỚC BỊ THIẾU Ở BẢN CŨ — đây chính là nguyên nhân log báo lỗi:
+      # "You do not have any SDKs in /home/runner/theos/sdks."
+      # Theos trên Linux cần 2 thứ ngoài source Theos, theo đúng
+      # bin/install-theos của Theos (hàm linux()):
+      #   1. Toolchain iOS cho Linux (clang + ld64 + ldid)
+      #   2. iOS SDK (patched, từ repo theos/sdks)
+      - name: Install iOS toolchain (Linux, non-Swift)
+        run: |
+          mkdir -p $HOME/theos/toolchain
+          curl -sL "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-$(uname -m).tar.xz" \
+            | tar -xJvf - -C $HOME/theos/toolchain/
+          test -x $HOME/theos/toolchain/linux/iphone/bin/clang
+      - name: Install iOS SDK
+        run: |
+          export THEOS=$HOME/theos
+          $THEOS/bin/install-sdk latest
+          ls $THEOS/sdks
       - name: Build package
         run: |
           export THEOS=$HOME/theos
