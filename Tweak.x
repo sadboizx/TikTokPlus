@@ -302,10 +302,17 @@ static double TTKDurationFromLabels(UIView *view) {
 // ============================================================================
 // Cách hoạt động:
 //  * Khi một view có tên chứa Progress/Slider/Seek xuất hiện trên màn hình,
-//    gắn 1 UILongPressGestureRecognizer (chỉ 1 lần, đánh dấu bằng associated
-//    object). Gesture không cancel touch gốc (cancelsTouchesInView = NO) nên
+//    gắn 1 UILongPressGestureRecognizer + 1 UIPanGestureRecognizer (chỉ 1
+//    lần mỗi loại, đánh dấu bằng associated object). Cả 2 đều có
+//    cancelsTouchesInView = NO và shouldRecognizeSimultaneously = YES nên
 //    hành vi seek gốc của TikTok không bị phá.
-//  * Khi long-press bắt đầu / di chuyển: lấy AVPlayer, kiểm tra duration.
+//  * V3 (theo lựa chọn của user 2026-11-04): trước đây CHỈ long-press mới
+//    kích hoạt preview, nên kéo ngay từ đầu chỉ hiện UI scrub của TikTok
+//    (đã xác nhận qua video test 21:15 cùng ngày). Giờ thêm Pan: kéo ngay
+//    cũng hiện preview, giữ long-press cho trường hợp nhấn-giữ không kéo.
+//    Cả 2 gesture gọi chung 1 hàm updatePreviewForBar:atX: nên không có
+//    2 đường code khác nhau.
+//  * Khi gesture bắt đầu / di chuyển: lấy AVPlayer, kiểm tra duration.
 //    duration >= 60s hoặc không xác định được -> ẩn preview, return ngay
 //    (video dài hoàn toàn không bị ảnh hưởng).
 //  * Ngược lại: tính thời gian = progress * duration, dùng AVAssetImageGenerator
@@ -457,11 +464,13 @@ static double TTKDurationFromLabels(UIView *view) {
 }
 @end
 
-// Handler cho long-press trên progress bar (singleton, làm target của gesture).
+// Handler cho gesture trên progress bar (singleton, làm target của gesture).
 @interface TTKProgressHandler : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
 - (void)attachToBar:(UIView *)bar;
 - (void)onLongPress:(UILongPressGestureRecognizer *)g;
+- (void)onPan:(UIPanGestureRecognizer *)g;
+- (void)updatePreviewForBar:(UIView *)bar atX:(CGFloat)x;
 @end
 
 @implementation TTKProgressHandler
@@ -481,14 +490,41 @@ static double TTKDurationFromLabels(UIView *view) {
     g.cancelsTouchesInView = NO; // không cướp touch seek gốc của TikTok
     g.delegate = self;
     [bar addGestureRecognizer:g];
+    // V3: Pan kích hoạt ngay khi kéo, không cần giữ 0.3s như long-press.
+    // Cũng cancelsTouchesInView = NO + simultaneous = YES để TikTok vẫn
+    // scrub bình thường song song với bubble của tweak.
+    UIPanGestureRecognizer *pan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(onPan:)];
+    pan.cancelsTouchesInView = NO;
+    pan.delegate = self;
+    [bar addGestureRecognizer:pan];
     objc_setAssociatedObject(bar, &kAttachedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    TTKLog(@"Attached long-press to progress bar: %@", TTKClassNameOf(bar));
+    TTKLog(@"Attached long-press + pan to progress bar: %@", TTKClassNameOf(bar));
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g
     shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)o {
     return YES; // cho phép TikTok xử lý gesture của nó song song
 }
 - (void)onLongPress:(UILongPressGestureRecognizer *)g {
+    if (!gEnabled || !gThumbnail) return;
+    UIView *bar = g.view;
+    if (!bar) return;
+    // CHỈ hide khi Ended/Cancelled, KHÔNG hide khi Failed: kéo ngay từ đầu
+    // làm long-press Failed (vượt quá allowableMovement trước 0.3s) trong
+    // khi Pan đang active và đang hiện bubble — hide ở đây sẽ làm bubble
+    // nhấp nháy / mất hẳn nếu user kéo chậm rồi giữ yên. Tap thường thì
+    // bubble vốn chưa hiện nên không cần hide.
+    if (g.state == UIGestureRecognizerStateEnded ||
+        g.state == UIGestureRecognizerStateCancelled) {
+        [[TTKThumbnailPreview shared] hide];
+        return;
+    }
+    if (g.state != UIGestureRecognizerStateBegan &&
+        g.state != UIGestureRecognizerStateChanged) return;
+    [self updatePreviewForBar:bar atX:[g locationInView:bar].x];
+}
+- (void)onPan:(UIPanGestureRecognizer *)g {
     if (!gEnabled || !gThumbnail) return;
     UIView *bar = g.view;
     if (!bar) return;
@@ -500,7 +536,12 @@ static double TTKDurationFromLabels(UIView *view) {
     }
     if (g.state != UIGestureRecognizerStateBegan &&
         g.state != UIGestureRecognizerStateChanged) return;
-    CGPoint p = [g locationInView:bar];
+    [self updatePreviewForBar:bar atX:[g locationInView:bar].x];
+}
+// Hàm chung cho cả long-press và pan: hiển thị preview tại vị trí x trên
+// bar, giữ nguyên mọi cửa chặn cũ (chỉ < 60s, không AVPlayer thì fallback
+// chỉ-hiện-giờ, không xác định được duration thì toast debug).
+- (void)updatePreviewForBar:(UIView *)bar atX:(CGFloat)x {
     AVPlayer *player = TTKPlayerForView(bar);
     if (!player) {
         // V2 — TikTok dùng player tùy biến (ByteDance) nên thường KHÔNG có
@@ -524,7 +565,7 @@ static double TTKDurationFromLabels(UIView *view) {
             if (duration <= 0 && vc.view) duration = TTKDurationFromLabels(vc.view);
         }
         if (duration > 0 && duration < 60) {
-            [[TTKThumbnailPreview shared] showTimeOnlyForBar:bar atX:p.x duration:duration];
+            [[TTKThumbnailPreview shared] showTimeOnlyForBar:bar atX:x duration:duration];
         } else {
             [[TTKThumbnailPreview shared] hide];
             TTKLog(@"No AVPlayer found for progress bar %@", TTKClassNameOf(bar));
@@ -532,7 +573,7 @@ static double TTKDurationFromLabels(UIView *view) {
         }
         return;
     }
-    [[TTKThumbnailPreview shared] showForBar:bar atX:p.x player:player];
+    [[TTKThumbnailPreview shared] showForBar:bar atX:x player:player];
 }
 @end
 
