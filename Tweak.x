@@ -635,6 +635,21 @@ static void TTKPresentCountryPicker(UIViewController *host) {
 // Nhận diện sheet Filters native của TikTok bằng NỘI DUNG, không bằng tên
 // class: phải có đồng thời label "Filters", label "Sort by" và nút "Apply".
 // 3 dấu hiệu cùng lúc để tránh nhầm với sheet filter hiệu ứng / filter video.
+// LƯU Ý: bản v2 đầu tiên dùng block đệ quy cho bước tìm Apply và bị clang
+// chặn ("block pointer variable is null when captured by block", -Werror)
+// ở cả arm64 và arm64e. Vì vậy bước này viết bằng hàm C đệ quy thường,
+// không dùng block tự gọi chính nó.
+static BOOL TTKSubtreeHasApplyButton(UIView *view) {
+    if (!view) return NO;
+    if ([view isKindOfClass:[UIButton class]]) {
+        NSString *t = [(UIButton *)view titleForState:UIControlStateNormal] ?: @"";
+        if ([t isEqualToString:@"Apply"]) return YES;
+    }
+    for (UIView *sub in view.subviews) {
+        if (TTKSubtreeHasApplyButton(sub)) return YES;
+    }
+    return NO;
+}
 static BOOL TTKIsFiltersSheet(UIViewController *vc) {
     if (!vc.view) return NO;
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
@@ -646,17 +661,7 @@ static BOOL TTKIsFiltersSheet(UIViewController *vc) {
     }
     if (!hasFilters || !hasSortBy) return NO;
     // Tìm nút Apply (đệ quy, vì nút có thể nằm sâu trong header của sheet).
-    __block BOOL hasApply = NO;
-    void (^findApply)(UIView *) = ^(UIView *v) {
-        if (hasApply || !v) return;
-        if ([v isKindOfClass:[UIButton class]]) {
-            NSString *t = [(UIButton *)v titleForState:UIControlStateNormal] ?: @"";
-            if ([t isEqualToString:@"Apply"]) hasApply = YES;
-        }
-        for (UIView *sub in v.subviews) findApply(sub);
-    };
-    findApply(vc.view);
-    return hasApply;
+    return TTKSubtreeHasApplyButton(vc.view);
 }
 static NSString *TTKCountryNameForCode(NSString *code) {
     for (NSDictionary *c in TTKCountries()) {
