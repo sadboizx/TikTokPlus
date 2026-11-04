@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>TikTokPlus — Bật/tắt từng tính năng. Thay đổi có hiệu lực sau khi mở lại TikTok.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Bật TikTokPlus</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>thumbnailProgress</string>
+			<key>label</key>
+			<string>Thumbnail Progress Bar (video &lt; 60s)</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>countryFilter</string>
+			<key>label</key>
+			<string>Country Filter trong Search</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Quốc gia mặc định khi mở Search. Để trống = Tất cả. Nhập mã ISO 2 chữ, vd: VN, US, JP.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>countryCode</string>
+			<key>label</key>
+			<string>Mã quốc gia mặc định</string>
+			<key>placeholder</key>
+			<string>VN</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Lưu video: lần đầu chọn tay một collection, các lần sau tweak tự chọn lại collection đó.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>autoSaveCollection</string>
+			<key>label</key>
+			<string>Auto-save vào Collection gần nhất</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>lastCollectionName</string>
+			<key>label</key>
+			<string>Tên Collection gần nhất</string>
+			<key>placeholder</key>
+			<string>Để trống = chưa có</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>hideSavedTip</string>
+			<key>label</key>
+			<string>Ẩn tip “Saved” sau khi lưu</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Chỉ dùng khi cần map lại class TikTok sau khi TikTok update. Log xem được qua Console trên Mac hoặc app Console trên máy đã jailbreak.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.tiktokplus.prefs</string>
+			<key>key</key>
+			<string>debugLog</string>
+			<key>label</key>
+			<string>Debug log (class TikTok)</string>
+			<key>PostNotification</key>
+			<string>com.tiktokplus.prefs/ReloadPrefs</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>TikTokPlus</string>
+</dict>
+</plist>

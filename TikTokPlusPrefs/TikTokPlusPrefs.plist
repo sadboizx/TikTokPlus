@@ -1,0 +1,1 @@
+{ entry = { bundle = TikTokPlusPrefs; cell = PSLinkCell; icon = "AppIcon60x60@2x.png"; isController = 1; label = TikTokPlus; }; }

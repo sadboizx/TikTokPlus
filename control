@@ -1,0 +1,9 @@
+Package: com.tiktokplus.tweak
+Name: TikTokPlus
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Thumbnail progress bar cho video ngắn, Country Filter trong Search, auto-save vào Collection gần nhất + ẩn tip Saved — cho TikTok iOS.
+Maintainer: TikTokPlus
+Author: TikTokPlus
+Section: Tweaks
+Depends: firmware (>= 15.0)
