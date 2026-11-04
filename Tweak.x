@@ -4,9 +4,13 @@
 //  ----------------------------------------------------------------------------
 //  3 tính năng (bật/tắt riêng trong Settings / trong app):
 //    1. Thumbnail Progress Bar — chỉ video ngắn (< 60s), long-press progress bar
-//       để xem thumbnail preview theo vị trí kéo.
-//    2. Country Filter trong Search — nút chọn quốc gia + chèn tham số
-//       region/country vào request search của TikTok.
+//       để xem thumbnail preview theo vị trí kéo. V2: thêm fallback chỉ-hiện-
+//       giờ khi không lấy được AVPlayer (xem ghi chú ở Feature 1).
+//    2. Country Filter trong Search — V2: KHÔNG còn nút góc phải nữa, mà là
+//       một hàng "Country" nằm trong sheet Filters native của TikTok
+//       (mở bằng nút ... trên màn kết quả search -> Filters). Chọn quốc gia
+//       ở đó, bấm Apply của TikTok, request search tiếp theo sẽ được chèn
+//       tham số region/country (nếu TikTok dùng NSURLSession).
 //    3. Auto-save vào Collection gần nhất + ẩn tip "Saved".
 //
 //  NGUYÊN TẮC QUAN TRỌNG — ĐỌC TRƯỚC KHI BUILD:
@@ -38,7 +42,8 @@
 // TikTok mới đổi tên. Giữ pattern càng chung càng bền, càng cụ thể càng ít
 // false-positive — cân bằng ở mức hiện tại là đủ cho TikTok 2024–2026.
 static NSArray<NSString *> *TTKProgressPatterns(void) {
-    return @[@"progress", @"slider", @"seekbar", @"seek"];
+    return @[@"progress", @"slider", @"seekbar", @"seek", @"scrub",
+             @"timeline", @"playbar", @"playerbar", @"controlbar", @"progressview"];
 }
 static NSArray<NSString *> *TTKSearchPatterns(void) {
     return @[@"search"];
@@ -183,10 +188,18 @@ static AVPlayer *TTKPlayerForView(UIView *view) {
     }
     UIViewController *vc = TTKViewControllerForView(view);
     if (vc) {
-        for (NSString *key in @[@"player", @"avPlayer", @"currentPlayer", @"videoPlayer"]) {
+        for (NSString *key in @[@"player", @"avPlayer", @"currentPlayer", @"videoPlayer",
+                                 @"playerController", @"playerView", @"awemePlayer",
+                                 @"videoPlayerView", @"playView"]) {
             @try {
                 id v = [vc valueForKey:key];
                 if ([v isKindOfClass:[AVPlayer class]]) return v;
+                // Một số controller giữ player trong 1 object trung gian:
+                // thử lấy tiếp key "player" từ object đó (1 cấp).
+                @try {
+                    id inner = [v valueForKey:@"player"];
+                    if ([inner isKindOfClass:[AVPlayer class]]) return inner;
+                } @catch (NSException *e2) {}
             } @catch (NSException *e) { /* key không tồn tại: bỏ qua */ }
         }
     }
@@ -214,6 +227,73 @@ static NSString *TTKTextOfCell(UIView *cell) {
     }
     return best;
 }
+// Toast debug hiện TRÊN MÀN HÌNH (không cần Mac/Console) — chỉ khi debugLog
+// bật. Dùng để trả lời câu hỏi "hook có chạy không?" mà không cần đọc log:
+// nếu search mà không thấy toast "search intercepted" thì TikTok không đi
+// qua NSURLSession, và việc chèn region không thể có tác dụng.
+static void TTKShowDebugToast(NSString *text) {
+    if (!gDebug) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *window = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { window = w; break; }
+        }
+        if (!window) window = [UIApplication sharedApplication].windows.firstObject;
+        if (!window) return;
+        UILabel *toast = (UILabel *)[window viewWithTag:987004];
+        if (!toast) {
+            toast = [[UILabel alloc] init];
+            toast.tag = 987004;
+            toast.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
+            toast.textColor = UIColor.whiteColor;
+            toast.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+            toast.textAlignment = NSTextAlignmentCenter;
+            toast.numberOfLines = 2;
+            toast.layer.cornerRadius = 10;
+            toast.clipsToBounds = YES;
+            [window addSubview:toast];
+        }
+        toast.text = text;
+        CGSize size = [toast sizeThatFits:CGSizeMake(window.bounds.size.width - 48, 100)];
+        toast.frame = CGRectMake(24, window.safeAreaInsets.top + 16,
+                                 window.bounds.size.width - 48, size.height + 20);
+        toast.hidden = NO;
+        [toast.layer removeAllAnimations];
+        // Ẩn sau 2.5s; lần toast sau sẽ dùng lại cùng label (không chồng).
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ toast.hidden = YES; });
+    });
+}
+static UIView *TTKFindViewWithTag(UIView *view, NSInteger tag) {
+    if (!view) return nil;
+    if (view.tag == tag) return view;
+    for (UIView *sub in view.subviews) {
+        UIView *found = TTKFindViewWithTag(sub, tag);
+        if (found) return found;
+    }
+    return nil;
+}
+// Tìm tổng thời lượng video từ các label thời gian trên màn hình, dạng
+// "00:12 / 00:19" hoặc "0:12 / 0:19". Trả về số giây của phần SAU dấu "/",
+// hoặc 0 nếu không tìm thấy. Dùng cho fallback thumbnail khi không có AVPlayer.
+static double TTKDurationFromLabels(UIView *view) {
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    TTKCollectLabels(view, labels, 0);
+    for (UILabel *l in labels) {
+        NSString *t = l.text ?: @"";
+        NSRange slash = [t rangeOfString:@"/"];
+        if (slash.location == NSNotFound) continue;
+        NSString *right = [[t substringFromIndex:slash.location + 1]
+                           stringByTrimmingCharactersInSet:
+                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSArray<NSString *> *parts = [right componentsSeparatedByString:@":"];
+        if (parts.count == 2) {
+            double total = [parts[0] doubleValue] * 60 + [parts[1] doubleValue];
+            if (total > 0) return total;
+        }
+    }
+    return 0;
+}
 
 // ============================================================================
 // TÍNH NĂNG 1 — Thumbnail Progress Bar (chỉ video < 60s)
@@ -232,18 +312,27 @@ static NSString *TTKTextOfCell(UIView *cell) {
 //    phía trên progress bar.
 //  * Khi thả tay: chỉ ẩn preview. Không tự seek — seek vẫn là việc của TikTok
 //    khi user tap/kéo bình thường, tránh xung đột với player gốc.
-//  * Giới hạn: TikTok dùng player tùy biến (không phải AVPlayerLayer) ở một số
-//    bản thì TTKPlayerForView trả về nil và preview sẽ không hiện. Khi đó bật
-//    Debug log để xem player nằm ở đâu, rồi bổ sung KVC key ở hàm trên.
+//  * Giới hạn (đã xác nhận qua video test 2026-11-04: scrub chỉ hiện giờ
+//    của TikTok, không hiện bubble): TikTok dùng player tùy biến (ByteDance)
+//    nên thường KHÔNG có AVPlayerLayer, TTKPlayerForView trả về nil. V2 không
+//    giả vờ render được frame khi không có asset: nếu lấy được tổng thời
+//    lượng từ label "/ MM:SS" trên màn hình và < 60s thì hiện bubble chỉ-
+//    hiện-giờ bám theo ngón tay; nếu không lấy được gì thì hiện debug toast
+//    trên màn hình (khi debugLog bật) thay vì im lặng, để lần test sau biết
+//    chắc là do không tìm thấy player.
 @interface TTKThumbnailPreview : NSObject
 @property (nonatomic, strong) UIView *bubble;
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, strong) UILabel *timeLabel;
+// Bubble chỉ-hiện-giờ (fallback khi không có AVPlayer/asset để render frame).
+@property (nonatomic, strong) UIView *timeBubble;
+@property (nonatomic, strong) UILabel *timeOnlyLabel;
 @property (nonatomic, strong) AVAssetImageGenerator *generator;
 @property (nonatomic, strong) AVAsset *lastAsset;
 @property (nonatomic) double lastSecond; // giây đã render gần nhất (cache)
 + (instancetype)shared;
 - (void)showForBar:(UIView *)bar atX:(CGFloat)x player:(AVPlayer *)player;
+- (void)showTimeOnlyForBar:(UIView *)bar atX:(CGFloat)x duration:(double)duration;
 - (void)hide;
 @end
 
@@ -328,8 +417,41 @@ static NSString *TTKTextOfCell(UIView *cell) {
         }
     }];
 }
+- (void)showTimeOnlyForBar:(UIView *)bar atX:(CGFloat)x duration:(double)duration {
+    // Chỉ video ngắn mới được preview, kể cả ở chế độ chỉ-hiện-giờ.
+    if (duration <= 0 || duration >= 60) { [self hide]; return; }
+    UIView *superview = bar.superview ?: bar;
+    if (!self.timeBubble) {
+        UIView *b = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 120, 36)];
+        b.backgroundColor = [UIColor colorWithWhite:0 alpha:0.9];
+        b.layer.cornerRadius = 18;
+        b.layer.masksToBounds = YES;
+        UILabel *lb = [[UILabel alloc] initWithFrame:b.bounds];
+        lb.textAlignment = NSTextAlignmentCenter;
+        lb.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold];
+        lb.textColor = UIColor.whiteColor;
+        [b addSubview:lb];
+        self.timeOnlyLabel = lb; self.timeBubble = b;
+    }
+    if (self.timeBubble.superview != superview) {
+        [self.timeBubble removeFromSuperview];
+        [superview addSubview:self.timeBubble];
+    }
+    self.bubble.hidden = YES;
+    CGFloat progress = MAX(0, MIN(1, x / MAX(1, bar.bounds.size.width)));
+    double target = progress * duration;
+    self.timeOnlyLabel.text = [NSString stringWithFormat:@"%@ / %@",
+                               [self stringForTime:target], [self stringForTime:duration]];
+    CGFloat bw = self.timeBubble.bounds.size.width;
+    CGFloat cx = [bar convertPoint:CGPointMake(x, 0) toView:superview].x;
+    cx = MAX(bw / 2 + 4, MIN(superview.bounds.size.width - bw / 2 - 4, cx));
+    CGFloat top = CGRectGetMinY(bar.frame) - self.timeBubble.bounds.size.height - 10;
+    self.timeBubble.center = CGPointMake(cx, top + self.timeBubble.bounds.size.height / 2);
+    self.timeBubble.hidden = NO;
+}
 - (void)hide {
     self.bubble.hidden = YES;
+    self.timeBubble.hidden = YES;
 }
 @end
 
@@ -376,36 +498,68 @@ static NSString *TTKTextOfCell(UIView *cell) {
     }
     if (g.state != UIGestureRecognizerStateBegan &&
         g.state != UIGestureRecognizerStateChanged) return;
+    CGPoint p = [g locationInView:bar];
     AVPlayer *player = TTKPlayerForView(bar);
-    if (!player) { // không tìm thấy player: không làm gì, không crash
-        TTKLog(@"No AVPlayer found for progress bar %@", TTKClassNameOf(bar));
+    if (!player) {
+        // V2 — TikTok dùng player tùy biến (ByteDance) nên thường KHÔNG có
+        // AVPlayerLayer. Trước đây code return im lặng nên user chỉ thấy
+        // "không có gì xảy ra". Giờ thử fallback: lấy tổng thời lượng từ
+        // label thời gian trên màn hình (vd "/ 00:19") hoặc từ KVC duration
+        // trên view controller. Nếu < 60s thì hiện bubble chỉ-hiện-giờ bám
+        // theo ngón tay; nếu không xác định được duration thì báo bằng
+        // debug toast (chỉ khi debugLog bật) thay vì im lặng.
+        double duration = 0;
+        UIViewController *vc = TTKViewControllerForView(bar);
+        if (vc) {
+            for (NSString *key in @[@"duration", @"totalDuration", @"videoDuration"]) {
+                @try {
+                    id v = [vc valueForKey:key];
+                    if ([v isKindOfClass:[NSNumber class]] && [v doubleValue] > 0) {
+                        duration = [v doubleValue]; break;
+                    }
+                } @catch (NSException *e) {}
+            }
+            if (duration <= 0 && vc.view) duration = TTKDurationFromLabels(vc.view);
+        }
+        if (duration > 0 && duration < 60) {
+            [[TTKThumbnailPreview shared] showTimeOnlyForBar:bar atX:p.x duration:duration];
+        } else {
+            [[TTKThumbnailPreview shared] hide];
+            TTKLog(@"No AVPlayer found for progress bar %@", TTKClassNameOf(bar));
+            TTKShowDebugToast(@"TikTokPlus: không tìm thấy AVPlayer (player TikTok không phải AVPlayer)");
+        }
         return;
     }
-    CGPoint p = [g locationInView:bar];
     [[TTKThumbnailPreview shared] showForBar:bar atX:p.x player:player];
 }
 @end
 
 // ============================================================================
-// TÍNH NĂNG 2 — Country Filter trong Search
+// TÍNH NĂNG 2 — Country Filter trong Search (V2: nằm trong Filters native)
 // ============================================================================
-// 2a. UI: khi một Search view controller xuất hiện, thêm nút "Quốc gia: XX"
-//     ở góc trên phải (tag riêng để không thêm trùng). Bấm nút -> action sheet
-//     chọn quốc gia -> lưu countryCode vào prefs -> nút đổi nhãn ngay.
-//     Action sheet có thêm mục "Cài đặt TikTokPlus..." mở màn hình cài đặt
-//     trong app (quan trọng với Feather: không cần vào Settings.app của máy
-//     đã jailbreak mới đổi được setting).
-// 2b. API: hook NSURLSession -dataTaskWithRequest:completionHandler:. Nếu URL
-//     thuộc TikTok và path chứa "search", chèn region/country vào request:
-//       - GET: thêm query param region + country_code.
-//       - POST JSON: decode body, thêm key region/country_code, encode lại.
-//     LƯU Ý TRUNG THỰC: TikTok có thể bỏ qua tham số này ở phía server
-//     (search region thường bị khóa theo tài khoản/IP). Khi đó filter vẫn
-//     hiển thị đúng lựa chọn của user, nhưng kết quả có thể không đổi —
-//     đó là giới hạn phía server, không phải lỗi hook. Không có cách client
-//     nào ép server TikTok lọc nếu nó không hỗ trợ tham số đó cho endpoint
-//     đang dùng; bật Debug log để xem URL thực tế của bản TikTok đang dùng
-//     rồi điều chỉnh tên tham số nếu cần (vd: "region" thay vì "country").
+// 2a. UI (V2): nút "Quốc gia" góc phải ở bản v1 đã BỎ — nó hay bị cắt chữ
+//     ở mép phải màn hình và không phải chỗ user mong đợi. Thay vào đó,
+//     khi sheet Filters native của TikTok mở lên (nhận diện bằng 3 dấu hiệu
+//     cùng lúc: label "Filters" + label "Sort by" + nút "Apply", không phụ
+//     thuộc tên class private), tweak thêm 1 hàng "Country: <tên nước> ›"
+//     ở cuối sheet. Bấm hàng đó -> action sheet chọn quốc gia -> lưu
+//     countryCode vào prefs -> hàng đổi nhãn ngay. Action sheet có thêm
+//     mục "Cài đặt TikTokPlus..." mở màn hình cài đặt trong app (quan trọng
+//     với Feather: không cần vào Settings.app của máy đã jailbreak mới đổi
+//     được setting). Đường vào đầy đủ: Search -> nút ... -> Filters ->
+//     hàng Country -> picker -> (tuỳ chọn) Cài đặt TikTokPlus.
+// 2b. API: hook NSURLSession -dataTaskWithRequest:completionHandler: (và
+//     dataTaskWithURL:). Nếu URL thuộc TikTok và path chứa "search", chèn
+//     region/country vào request: GET thêm query param, POST JSON thêm key.
+//     LƯU Ý TRUNG THỰC (đã thấy rõ trong video test của user ngày 2026-11-04:
+//     chọn VN xong kết quả vẫn lẫn creator quốc tế): TikTok có thể (1) bỏ
+//     qua tham số này ở phía server, hoặc (2) không đi qua NSURLSession mà
+//     dùng network stack riêng (TTNet/Cronet) nên hook không bao giờ chạy.
+//     Vì vậy v2 thêm debug toast trên màn hình: khi debugLog bật mà search
+//     KHÔNG hiện toast "search intercepted" thì chắc chắn là trường hợp (2),
+//     và không có cách chèn param nào qua NSURLSession cứu được — bước tiếp
+//     theo khi đó là map network class riêng của TikTok, không phải đoán
+//     thêm tên tham số.
 @interface TTKInAppSettingsViewController : UITableViewController
 @end
 @implementation TTKInAppSettingsViewController
@@ -446,18 +600,18 @@ static void TTKPresentCountryPicker(UIViewController *host) {
                                      preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSDictionary *c in TTKCountries()) {
         NSString *code = c[@"code"];
-        UIAlertAction *a = [UIAlertAction actionWithTitle:c[@"name"]
+        NSString *countryName = c[@"name"];
+        UIAlertAction *a = [UIAlertAction actionWithTitle:countryName
                                                     style:UIAlertActionStyleDefault
                                                   handler:^(UIAlertAction *_) {
             TTKPrefSet(@"countryCode", code ?: @"");
             TTKReloadPrefs();
-            // Cập nhật nhãn nút ngay (tìm lại theo tag).
-            for (UIView *v in host.view.subviews) {
-                if ([v isKindOfClass:[UIButton class]] && v.tag == 987001) {
-                    NSString *label = code.length ? [NSString stringWithFormat:@"Quốc gia: %@", code]
-                                                  : @"Quốc gia: Tất cả";
-                    [(UIButton *)v setTitle:label forState:UIControlStateNormal];
-                }
+            // Cập nhật nhãn hàng Country trong sheet Filters ngay
+            // (label giá trị có tag 987003, tìm đệ quy vì hàng nằm sâu
+            // trong hierarchy của sheet).
+            UIView *valueLabel = TTKFindViewWithTag(host.view, 987003);
+            if ([valueLabel isKindOfClass:[UILabel class]]) {
+                ((UILabel *)valueLabel).text = countryName;
             }
         }];
         [sheet addAction:a];
@@ -478,34 +632,90 @@ static void TTKPresentCountryPicker(UIViewController *host) {
         CGRectMake(host.view.bounds.size.width - 60, 60, 1, 1);
     [host presentViewController:sheet animated:YES completion:nil];
 }
-static void TTKMaybeAddCountryButton(UIViewController *vc) {
-    if (!gEnabled || !gCountryFilter) return;
-    if (!TTKNameMatches(TTKClassNameOf(vc), TTKSearchPatterns())) return;
-    for (UIView *v in vc.view.subviews) {
-        if ([v isKindOfClass:[UIButton class]] && v.tag == 987001) return; // đã có
+// Nhận diện sheet Filters native của TikTok bằng NỘI DUNG, không bằng tên
+// class: phải có đồng thời label "Filters", label "Sort by" và nút "Apply".
+// 3 dấu hiệu cùng lúc để tránh nhầm với sheet filter hiệu ứng / filter video.
+static BOOL TTKIsFiltersSheet(UIViewController *vc) {
+    if (!vc.view) return NO;
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    TTKCollectLabels(vc.view, labels, 0);
+    BOOL hasFilters = NO, hasSortBy = NO;
+    for (UILabel *l in labels) {
+        if ([l.text isEqualToString:@"Filters"]) hasFilters = YES;
+        if ([l.text isEqualToString:@"Sort by"]) hasSortBy = YES;
     }
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.tag = 987001;
-    NSString *label = gCountryCode.length ? [NSString stringWithFormat:@"Quốc gia: %@", gCountryCode]
-                                          : @"Quốc gia: Tất cả";
-    [btn setTitle:label forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    btn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
-    [btn setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    btn.layer.cornerRadius = 14;
-    btn.contentEdgeInsets = UIEdgeInsetsMake(6, 12, 6, 12);
-    [btn sizeToFit];
-    CGRect f = btn.frame;
-    CGFloat top = vc.view.safeAreaInsets.top + 8;
-    btn.frame = CGRectMake(vc.view.bounds.size.width - f.size.width - 12, top,
-                           f.size.width, f.size.height);
-    btn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+    if (!hasFilters || !hasSortBy) return NO;
+    // Tìm nút Apply (đệ quy, vì nút có thể nằm sâu trong header của sheet).
+    __block BOOL hasApply = NO;
+    void (^findApply)(UIView *) = ^(UIView *v) {
+        if (hasApply || !v) return;
+        if ([v isKindOfClass:[UIButton class]]) {
+            NSString *t = [(UIButton *)v titleForState:UIControlStateNormal] ?: @"";
+            if ([t isEqualToString:@"Apply"]) hasApply = YES;
+        }
+        for (UIView *sub in v.subviews) findApply(sub);
+    };
+    findApply(vc.view);
+    return hasApply;
+}
+static NSString *TTKCountryNameForCode(NSString *code) {
+    for (NSDictionary *c in TTKCountries()) {
+        if ([c[@"code"] isEqualToString:code ?: @""]) return c[@"name"];
+    }
+    return @"Tất cả quốc gia";
+}
+// Thêm hàng "Country" vào cuối sheet Filters native. Hàng nằm ở vùng trống
+// cuối sheet (trong ảnh test của user, sau mục Date posted còn nhiều khoảng
+// trắng), cao 48pt, trông như 1 row setting: trái là "Country", phải là tên
+// nước đang chọn + chevron. Bấm hàng -> mở picker quốc gia (cùng picker cũ).
+static void TTKMaybeAddFiltersCountryRow(UIViewController *vc) {
+    if (!gEnabled || !gCountryFilter) return;
+    if (!TTKIsFiltersSheet(vc)) return;
+    if (TTKFindViewWithTag(vc.view, 987002)) return; // đã có hàng rồi
+    CGFloat width = vc.view.bounds.size.width;
+    if (width <= 0) return;
+    CGFloat bottom = vc.view.safeAreaInsets.bottom;
+    // Hàng đặt cách đáy sheet 16pt (trên safe area), để không đè lên các
+    // chip Date posted; autoresizing giữ nó bám đáy khi sheet đổi layout.
+    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(16, vc.view.bounds.size.height - bottom - 64,
+                                                          width - 32, 48)];
+    row.backgroundColor = UIColor.whiteColor;
+    row.layer.cornerRadius = 12;
+    row.layer.borderColor = [UIColor colorWithWhite:0.85 alpha:1].CGColor;
+    row.layer.borderWidth = 1;
+    row.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    UILabel *left = [[UILabel alloc] initWithFrame:CGRectMake(16, 0, 100, 48)];
+    left.text = @"Country";
+    left.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    left.textColor = UIColor.blackColor;
+    [row addSubview:left];
+    UILabel *value = [[UILabel alloc] initWithFrame:CGRectMake(110, 0, row.bounds.size.width - 140, 48)];
+    value.tag = 987003; // label giá trị, picker sẽ cập nhật trực tiếp
+    value.text = TTKCountryNameForCode(gCountryCode);
+    value.font = [UIFont systemFontOfSize:15];
+    value.textColor = [UIColor colorWithWhite:0.35 alpha:1];
+    value.textAlignment = NSTextAlignmentRight;
+    value.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [row addSubview:value];
+    UILabel *chev = [[UILabel alloc] initWithFrame:CGRectMake(row.bounds.size.width - 28, 0, 20, 48)];
+    chev.text = @"›";
+    chev.font = [UIFont systemFontOfSize:22];
+    chev.textColor = [UIColor colorWithWhite:0.6 alpha:1];
+    chev.textAlignment = NSTextAlignmentCenter;
+    chev.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [row addSubview:chev];
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeCustom];
+    btn.tag = 987002;
+    btn.frame = row.bounds;
+    btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     // Target là singleton TTKProgressHandler; method countryButtonTapped:
     // được định nghĩa trong category bên dưới, tìm host qua responder chain.
     [btn addTarget:[TTKProgressHandler shared]
             action:@selector(countryButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [vc.view addSubview:btn];
-    TTKLog(@"Added country button to %@", TTKClassNameOf(vc));
+    [row addSubview:btn];
+    [vc.view addSubview:row];
+    [vc.view bringSubviewToFront:row];
+    TTKLog(@"Added Country row to Filters sheet: %@", TTKClassNameOf(vc));
 }
 
 // Category bổ sung method nút quốc gia (đặt sau để tránh forward declaration).
@@ -528,6 +738,14 @@ static NSURLRequest *TTKRequestWithCountry(NSURLRequest *request) {
     BOOL isSearch = [url.path.lowercaseString containsString:@"search"];
     if (!isTikTok || !isSearch) return request;
     TTKLog(@"Search request intercepted: %@", url.absoluteString);
+    // Toast debug, throttle 5s/lần để không spam khi search bắn nhiều request.
+    static NSTimeInterval lastToast = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (gDebug && now - lastToast > 5) {
+        lastToast = now;
+        TTKShowDebugToast([NSString stringWithFormat:@"TikTokPlus: search intercepted, region=%@",
+                           gCountryCode]);
+    }
     NSMutableURLRequest *m = [request mutableCopy];
     if ([request.HTTPMethod isEqualToString:@"GET"] || !request.HTTPBody) {
         NSURLComponents *comp = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
@@ -736,7 +954,9 @@ static BOOL TTKIsSavedToast(UIView *view) {
     if (gThumbnail && TTKNameMatches(TTKClassNameOf(self), TTKProgressPatterns())) {
         // Chỉ gắn cho view có kích thước giống thanh progress (ngang, thấp),
         // tránh gắn nhầm vào progress indicator tròn / loading spinner.
-        if (self.bounds.size.width > 100 && self.bounds.size.height <= 40) {
+        // V2: nới từ cao <=40 lên <=60 và rộng >80, vì progress bar của
+        // TikTok ở màn full-screen có vùng chạm cao hơn thanh mảnh hiển thị.
+        if (self.bounds.size.width > 80 && self.bounds.size.height <= 60) {
             [[TTKProgressHandler shared] attachToBar:self];
         }
     }
@@ -755,8 +975,9 @@ static BOOL TTKIsSavedToast(UIView *view) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     if (!gEnabled) return;
-    // 2a. Search -> thêm nút Country Filter.
-    TTKMaybeAddCountryButton(self);
+    // 2a (V2). Sheet Filters native -> thêm hàng Country.
+    // (Nút góc phải bản v1 đã bỏ, xem ghi chú ở Feature 2.)
+    TTKMaybeAddFiltersCountryRow(self);
     // 3a/3b. Collection picker -> học collection + auto-tap nếu có.
     TTKMaybeHandlePicker(self);
 }
@@ -769,6 +990,15 @@ static BOOL TTKIsSavedToast(UIView *view) {
                                                        NSError *error))completionHandler {
     NSURLRequest *modified = TTKRequestWithCountry(request);
     return %orig(modified, completionHandler);
+}
+// Một số code path dùng dataTaskWithURL: thay vì dataTaskWithRequest: —
+// chèn region vào URL rồi gọi bản gốc, để không bỏ sót dạng này.
+- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url
+                       completionHandler:(void (^)(NSData *data,
+                                                   NSURLResponse *response,
+                                                   NSError *error))completionHandler {
+    NSURLRequest *modified = TTKRequestWithCountry([NSURLRequest requestWithURL:url]);
+    return %orig(modified.URL, completionHandler);
 }
 %end
 
